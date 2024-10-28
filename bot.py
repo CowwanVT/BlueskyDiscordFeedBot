@@ -1,49 +1,72 @@
 import requests
 import json
-from datetime import datetime, timezone
+import time
 import discord
 from discord.ext import tasks
+import threading
+import queue
 
-feedURL = '' #the share feed url of the feed you want to scrape from
+feedURL = '' ##the feed url from "share feed"
+discordChannelID =    #the discord channel ID to post to
+discordBotToken = '' #your discord bot token
 
-splitURL = feedURL.split('/')
-feedURI = 'at://' + splitURL[4] + '/app.bsky.feed.generator/' + splitURL[6]
+limit = 50 #how many records to get at a time
+interval = 1 #how many minutes to wait between checks
 
-requestURL = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed'
-limit = 50
 
-discordChannelID = #channel ID to post in
-discordBotToken = #bot token from discord developer
+def logToConsole(message):
+    print(str(time.asctime()) + ' ' + message)
 
-global lastUpdateTime
-lastUpdateTime = datetime.now(timezone.utc).timestamp()
-
-interval = 15 #how many minutes to wait between checks
+def getURL(post):
+    author = post['post']['author']['handle']
+    postID = post['post']['uri'].split('/')[4]
+    postURL = 'https://bsyy.app/profile/'+ author + '/post/' + postID
+    return postURL
 
 def getBlueskyPosts():
+    postURLs = []
+    splitURL = feedURL.split('/')
+    feedURI = 'at://' + splitURL[4] + '/app.bsky.feed.generator/' + splitURL[6]
+    requestURL = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed'
     constructedURL = requestURL + '?feed=' + feedURI + '&limit=' + str(limit)
     response = requests.get(constructedURL).json()
-    return response
+    for post in response['feed']:
+        postURL = getURL(post)
+        postURLs.append(postURL)
+    return postURLs
 
-intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+def blueskyChecker(postQueue):
+    oldPostURLs = []
+    postURLs = []
+    postURLs = getBlueskyPosts()
+    while True:
+        time.sleep(interval*60)
+        logToConsole('Retrieving messages')
+        oldPostURLs = postURLs
+        postURLs = getBlueskyPosts()
+        for URL in postURLs:
+            if URL not in oldPostURLs:
+                postQueue.put(URL)
+        logToConsole(str(postQueue.qsize()) + ' posts queued')
+
+postQueue = queue.Queue()
+blueskyThread = threading.Thread(target=blueskyChecker, args=(postQueue,))
+blueskyThread.daemon = True
+blueskyThread.start()
+
+client = discord.Client(intents=discord.Intents.default())
 
 @tasks.loop(minutes = interval)
 async def checkPosts():
-    global lastUpdateTime
-    await client.wait_until_ready()
     channel = client.get_channel(discordChannelID)
-    response = getBlueskyPosts()
-    for post in response['feed']:
-        postTime = datetime.strptime(post['post']['record']['createdAt'],  '%Y-%m-%dT%H:%M:%S.%f%z').timestamp()
-        if postTime > (lastUpdateTime):
-            postURL = 'https://bsky.app/profile/'+ post['post']['author']['handle'] + '/post/' + post['post']['uri'].split('/')[4]
-            await channel.send(postURL)
-    lastUpdateTime = datetime.now().timestamp()- 20
+    logToConsole('Posting ' + str(postQueue.qsize()) + ' messages')
+    while postQueue.qsize() > 0:
+        await client.wait_until_ready()
+        await channel.send(postQueue.get())
 
 @client.event
 async def on_ready():
-    print('We have logged in as {0.user}'.format(client))
+    logToConsole('Logged in as {0.user}'.format(client))
     checkPosts.start()
 
 client.run(discordBotToken)
