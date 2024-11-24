@@ -13,40 +13,61 @@ discordBotToken = '' #your discord bot token
 limit = 50 #how many records to get at a time
 interval = 1 #how many minutes to wait between checks
 
+class Post():
+    def __init__(self, post):
+        self.postURI = post['post']['uri']
+        self.postAuthor = post['post']['author']['handle']
+        self.postID = str(self.postURI.split('/')[4]).lower()
+        self.postURL = 'https://bsyy.app/profile/'+ self.postAuthor + '/post/' + self.postID
+        self.isValid = self.postAuthor != 'handle.invalid'
+        self.postCID = post['post']['cid']
+
+class Bluesky():
+    def __init__(self):
+        self.postIDs = []
+        self.postHistoryLimit = 100
+        splitFeedURL = feedURL.split('/')
+        self.feedURI = 'at://' + splitFeedURL[4] + '/app.bsky.feed.generator/' + splitFeedURL[6]
+        self.endpointURL = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed'
+        self.requestURL = self.endpointURL + '?feed=' + self.feedURI + '&limit=' + str(limit)
+        self.populateHistory()
+
+    def getPosts(self):
+        newPosts = []
+        response = requests.get(self.requestURL).json()
+        postList = response['feed']
+        for postData in postList:
+            post = Post(postData)
+            if post.isValid:
+                if post.postCID not in self.postIDs:
+                    self.postIDs.append(post.postCID)
+                    newPosts.append(post)
+
+        while len(self.postIDs) > self.postHistoryLimit:
+            self.postIDs.pop(0)
+        return newPosts
+
+    def populateHistory(self):
+        response = requests.get(self.requestURL).json()
+        postList = response['feed']
+
+        for postData in postList:
+            post = Post(postData)
+            self.postIDs.append(post.postCID)
 
 def logToConsole(message):
     print(str(time.asctime()) + ' ' + message)
 
-def getURL(post):
-    author = post['post']['author']['handle']
-    postID = post['post']['uri'].split('/')[4]
-    postURL = 'https://bsyy.app/profile/'+ author + '/post/' + postID
-    return postURL
-
-def getBlueskyPosts():
-    postURLs = []
-    splitURL = feedURL.split('/')
-    feedURI = 'at://' + splitURL[4] + '/app.bsky.feed.generator/' + splitURL[6]
-    requestURL = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed'
-    constructedURL = requestURL + '?feed=' + feedURI + '&limit=' + str(limit)
-    response = requests.get(constructedURL).json()
-    for post in response['feed']:
-        postURL = getURL(post)
-        postURLs.append(postURL)
-    return postURLs
 
 def blueskyChecker(postQueue):
-    oldPostURLs = []
-    postURLs = []
-    postURLs = getBlueskyPosts()
+    posts = []
+    Bsky = Bluesky()
     while True:
         time.sleep(interval*60)
         logToConsole('Retrieving messages')
-        oldPostURLs = postURLs
-        postURLs = getBlueskyPosts()
-        for URL in postURLs:
-            if URL not in oldPostURLs:
-                postQueue.put(URL)
+        posts = Bsky.getPosts()
+        for post in posts:
+            postQueue.put(post.postURL)
         logToConsole(str(postQueue.qsize()) + ' posts queued')
 
 postQueue = queue.Queue()
